@@ -25,7 +25,7 @@
     Host code
 */
 
-#define OBJECT_COUNT 22 //Do NOT go beyond 20002
+#define OBJECT_COUNT 0 //Do NOT go beyond 20002. Also keep it even
 #define BLOCK_DIM 1024
 // includes, system
 // #include <GL/glew.h>
@@ -292,6 +292,7 @@ int findGraphicsGPU(char *name)
 ////////////////////////////////////////////////////////////////////////////////
 int main(int argc, char **argv)
 {
+	srand((int)time(0));
     char *ref_file = NULL;
 
     pArgc = &argc;
@@ -545,6 +546,10 @@ void runAutoTest(int devID, char **argv, char *ref_file)
 }
 
 
+float4 getRandomSpeed(){
+	return make_float4((rand()%100)/100,(rand()%100)/100,(rand()%100)/100,1.0f);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 //! Create VBO
 ////////////////////////////////////////////////////////////////////////////////
@@ -562,49 +567,43 @@ void createVBO(GLuint *vbo, struct cudaGraphicsResource **vbo_res,
 
 
     bool res = loadOBJ("cone.obj", vertices, uvs, normals);
-    if(res == false)
-        exit(1);
+    assert(res);
     objects[0].n_vertices = vertices.size();
-    objects[0].speed = make_float4(0.1f,0.0f,0.0f,1.0f);
+    objects[0].speed = getRandomSpeed();
 
     std::vector<glm::vec3> temp_vertices;
     res = loadOBJ("cube.obj", temp_vertices, uvs, normals);
-    if(res == false)
-        exit(1);
+    assert(res);
     objects[1].n_vertices = temp_vertices.size();
-    objects[1].speed = make_float4(0.0f,0.0f,0.1f,1.0f);
+    objects[1].speed = getRandomSpeed();
 
     vertices.insert(vertices.end(), temp_vertices.begin(), temp_vertices.end());
 
     std::vector<glm::vec3> temp_vertices_cube;
     std::vector<glm::vec3> temp_vertices_cone;
-
-    res = loadOBJ("cube.obj", temp_vertices_cube, uvs, normals);
-    if(res == false)
-        exit(1);
-    res = loadOBJ("cone.obj", temp_vertices_cone, uvs, normals);
-    if(res == false)
-        exit(1);
-
-    srand((int)time(0));
+    if((OBJECT_COUNT - 2 )/2 > 0){
+	    res = loadOBJ("cube.obj", temp_vertices_cube, uvs, normals);
+	    assert(res);
+	    res = loadOBJ("cone.obj", temp_vertices_cone, uvs, normals);
+	    assert(res);
+	}
+    
     for (int i = 0; i < (OBJECT_COUNT - 2)/2; ++i)
     {
         printf("i = %d\n", i);
         int index = 2*(i+1);
         objects[index].n_vertices = temp_vertices_cube.size();
-        float r = (rand() % 100) + 1; r/=100;
-        objects[index].speed = make_float4(0.0f,0.0f,r,1.0f);
+        objects[index].speed = getRandomSpeed();
         vertices.insert(vertices.end(), temp_vertices_cube.begin(), temp_vertices_cube.end());
 
         objects[index + 1].n_vertices = temp_vertices_cone.size();
-        r = (rand() % 100) + 1; r/=100;
-        objects[index + 1].speed = make_float4(r,0.0f,0.0f,1.0f);
+        objects[index + 1].speed = getRandomSpeed();
         vertices.insert(vertices.end(), temp_vertices_cone.begin(), temp_vertices_cone.end());
 
     }
 
     
-    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float4), 0, GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float4), &vertices[0], GL_DYNAMIC_DRAW);
     // glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float4), &vertices[0], GL_DYNAMIC_DRAW);
     printf("Size of vertices = %d\n", vertices.size());
     glBindBuffer(GL_ARRAY_BUFFER, 0);
