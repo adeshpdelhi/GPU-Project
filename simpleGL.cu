@@ -25,7 +25,7 @@
     Host code
 */
 
-#define OBJECT_COUNT 0 //Do NOT go beyond 20002. Also keep it even
+#define OBJECT_COUNT 2 //Do NOT go beyond 20002. Also keep it an even number
 #define BLOCK_DIM 1024
 // includes, system
 // #include <GL/glew.h>
@@ -209,9 +209,11 @@ __global__ void simple_vbo_kernel(float4 *pos, struct object* d_objects, float t
 void launch_kernel(float4 *pos, struct object* objects, float time)
 {
     // execute the kernel
-    dim3 grid(ceil((float)vertices.size()/BLOCK_DIM),1);
+    int threadsInBlock = ceil((float)vertices.size()/BLOCK_DIM);
+    dim3 grid(threadsInBlock,1);
     dim3 block(BLOCK_DIM,1);
-    // printf("here\n");
+    // printf("Size of vertices in kernel: %d, BLOCK_DIM: %d, %f\n", vertices.size(),BLOCK_DIM,(float)vertices.size()/BLOCK_DIM);
+    // printf("kernel dimenstion: Grid.x = %d\n",threadsInBlock);
 
     simple_vbo_kernel<<< grid, block>>>(pos, objects, time);
 }
@@ -465,7 +467,7 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
     size_t num_bytes;
     checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void **)&dptr, &num_bytes,
                                                          *vbo_resource));
-    // printf("CUDA mapped VBO: May access %ld bytes\n", num_bytes);
+    printf("CUDA mapped VBO: May access %ld bytes\n", num_bytes);
 
     // execute the kernel
     //    dim3 block(8, 8, 1);
@@ -484,9 +486,9 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
         host_pos[i] = make_float4(vertices[i].x,vertices[i].y, vertices[i].z,1.0f);
     }
     // printf("2\n");
-    cudaMemcpy(dptr, host_pos, sizeof(host_pos), cudaMemcpyHostToDevice);
+    cudaMemcpy(dptr, host_pos, vertices.size()*sizeof(float4), cudaMemcpyHostToDevice);
     struct object* d_objects;
-    cudaMalloc(&d_objects, OBJECT_COUNT * sizeof(object));
+    cudaMalloc(&d_objects, sizeof(objects));
     // printf("3\n");
     cudaMemcpy(d_objects, objects, sizeof(objects), cudaMemcpyHostToDevice);
     // printf("Memory allocated in device successfully!\n");
@@ -547,7 +549,7 @@ void runAutoTest(int devID, char **argv, char *ref_file)
 
 
 float4 getRandomSpeed(){
-	return make_float4((rand()%100)/100,(rand()%100)/100,(rand()%100)/100,1.0f);
+	return make_float4((rand()%100)/100.0,(rand()%100)/100.0,(rand()%100)/100.0,1.0f);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -565,41 +567,49 @@ void createVBO(GLuint *vbo, struct cudaGraphicsResource **vbo_res,
     // initialize buffer object
     // unsigned int size = mesh_width * mesh_height * 4 * sizeof(float);
 
+    vertices.clear();
+    // bool res = loadOBJ("cone.obj", vertices, uvs, normals);
+    // assert(res);
+    // objects[0].n_vertices = vertices.size();
+    // objects[0].speed = getRandomSpeed();
 
-    bool res = loadOBJ("cone.obj", vertices, uvs, normals);
-    assert(res);
-    objects[0].n_vertices = vertices.size();
-    objects[0].speed = getRandomSpeed();
+    // std::vector<glm::vec3> temp_vertices;
+    // res = loadOBJ("cube.obj", temp_vertices, uvs, normals);
+    // assert(res);
+    // objects[1].n_vertices = temp_vertices.size();
+    // objects[1].speed = getRandomSpeed();
 
-    std::vector<glm::vec3> temp_vertices;
-    res = loadOBJ("cube.obj", temp_vertices, uvs, normals);
-    assert(res);
-    objects[1].n_vertices = temp_vertices.size();
-    objects[1].speed = getRandomSpeed();
-
-    vertices.insert(vertices.end(), temp_vertices.begin(), temp_vertices.end());
+    // vertices.insert(vertices.end(), temp_vertices.begin(), temp_vertices.end());
 
     std::vector<glm::vec3> temp_vertices_cube;
     std::vector<glm::vec3> temp_vertices_cone;
-    if((OBJECT_COUNT - 2 )/2 > 0){
+    // res = loadOBJ("cube.obj", temp_vertices_cube, uvs, normals);
+    // assert(res);
+    // res = loadOBJ("cone.obj", temp_vertices_cone, uvs, normals);
+    // assert(res);
+
+    if(OBJECT_COUNT  > 0){
+    	bool res;
 	    res = loadOBJ("cube.obj", temp_vertices_cube, uvs, normals);
 	    assert(res);
 	    res = loadOBJ("cone.obj", temp_vertices_cone, uvs, normals);
 	    assert(res);
 	}
     
-    for (int i = 0; i < (OBJECT_COUNT - 2)/2; ++i)
+    for (int i = 0; i < OBJECT_COUNT; ++i)
     {
-        printf("i = %d\n", i);
-        int index = 2*(i+1);
-        objects[index].n_vertices = temp_vertices_cube.size();
-        objects[index].speed = getRandomSpeed();
-        vertices.insert(vertices.end(), temp_vertices_cube.begin(), temp_vertices_cube.end());
-
-        objects[index + 1].n_vertices = temp_vertices_cone.size();
-        objects[index + 1].speed = getRandomSpeed();
-        vertices.insert(vertices.end(), temp_vertices_cone.begin(), temp_vertices_cone.end());
-
+        // printf("i = %d\n", i);
+        // int index = i;
+        if(i%2 == 0){
+	        objects[i].n_vertices = temp_vertices_cube.size();
+	        objects[i].speed = getRandomSpeed();
+	        vertices.insert(vertices.end(), temp_vertices_cube.begin(), temp_vertices_cube.end());
+		}
+		else{
+	        objects[i].n_vertices = temp_vertices_cone.size();
+	        objects[i].speed = getRandomSpeed();
+	        vertices.insert(vertices.end(), temp_vertices_cone.begin(), temp_vertices_cone.end());
+	    }
     }
 
     
