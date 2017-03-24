@@ -25,7 +25,8 @@
     Host code
 */
 
-#define OBJECT_COUNT 2 //Do NOT go beyond 20002. Also keep it an even number
+#define OBJECT_COUNT 1500 //Do NOT go beyond 1500
+#define MAX_MAPPINGS 100000000
 #define BLOCK_DIM 1024
 // includes, system
 // #include <GL/glew.h>
@@ -90,6 +91,7 @@ const unsigned int mesh_height   = 256;
 
 // vbo variables
 GLuint vbo;
+GLuint ibo;
 struct cudaGraphicsResource *cuda_vbo_resource;
 void *d_vbo_buffer = NULL;
 
@@ -124,9 +126,9 @@ void cleanup();
 
 // GL functionality
 bool initGL(int *argc, char **argv);
-void createVBO(GLuint *vbo, struct cudaGraphicsResource **vbo_res,
+void createVBOAndIBO(GLuint *vbo, GLuint *ibo, struct cudaGraphicsResource **vbo_res,
                unsigned int vbo_res_flags);
-void deleteVBO(GLuint *vbo, struct cudaGraphicsResource *vbo_res);
+void deleteVBOAndIBO(GLuint *vbo, struct cudaGraphicsResource *vbo_res);
 
 // rendering callbacks
 void display();
@@ -147,17 +149,15 @@ struct object{
     float4 speed;
 }objects[OBJECT_COUNT];
 
-float4 host_pos[1000000]; //globally declared to allot more vertices than feasible in local scope
+float4 *host_pos; //globally declared to allot more vertices than feasible in local scope
 
 std::vector<glm::vec3> vertices;
-std::vector<glm::vec2> uvs;
-std::vector<glm::vec3> normals;
+std::vector<unsigned int> mappings;
 
 bool loadOBJ(
     const char * path, 
     std::vector<glm::vec3> & out_vertices, 
-    std::vector<glm::vec2> & out_uvs,
-    std::vector<glm::vec3> & out_normals
+    std::vector <unsigned int> & mappings
 );
 
 __device__ int getObjectId(int index, struct object* d_objects){
@@ -294,6 +294,11 @@ int findGraphicsGPU(char *name)
 ////////////////////////////////////////////////////////////////////////////////
 int main(int argc, char **argv)
 {
+	host_pos = (float4 *)malloc(MAX_MAPPINGS*sizeof(float4));
+	if(host_pos == NULL){
+		printf("Error: Unable to allocate mapping memory on host.\n");
+		exit(-1);
+	}
 	srand((int)time(0));
     char *ref_file = NULL;
 
@@ -398,7 +403,7 @@ bool runTest(int argc, char **argv, char *ref_file)
         printf("ref_file not found\n");
         // create VBO
         // checkCudaErrors(cudaMalloc((void **)&d_vbo_buffer, mesh_width*mesh_height*4*sizeof(float)));
-        checkCudaErrors(cudaMalloc((void **)&d_vbo_buffer, vertices.size()*4*sizeof(float)));
+        checkCudaErrors(cudaMalloc((void **)&d_vbo_buffer, vertices.size()*sizeof(glm::vec3)));
 
         // run the cuda part
         runAutoTest(devID, argv, ref_file);
@@ -444,7 +449,7 @@ bool runTest(int argc, char **argv, char *ref_file)
 #endif
 
         // create VBO
-        createVBO(&vbo, &cuda_vbo_resource, cudaGraphicsMapFlagsWriteDiscard);
+        createVBOAndIBO(&vbo, &ibo, &cuda_vbo_resource, cudaGraphicsMapFlagsWriteDiscard);
 
         // run the cuda part
         runCuda(&cuda_vbo_resource);
@@ -467,7 +472,7 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
     size_t num_bytes;
     checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void **)&dptr, &num_bytes,
                                                          *vbo_resource));
-    printf("CUDA mapped VBO: May access %ld bytes\n", num_bytes);
+    // printf("CUDA mapped VBO: May access %ld bytes\n", num_bytes);
 
     // execute the kernel
     //    dim3 block(8, 8, 1);
@@ -485,16 +490,18 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
         // printf("pos[i].x = %f\n", host_pos[i].x);
         host_pos[i] = make_float4(vertices[i].x,vertices[i].y, vertices[i].z,1.0f);
     }
-    // printf("2\n");
-    cudaMemcpy(dptr, host_pos, vertices.size()*sizeof(float4), cudaMemcpyHostToDevice);
+    // printf("%d %d %d\n",dptr, host_pos, vertices.size()*sizeof(float4));
+    // checkCudaErrors(cudaDeviceSynchronize());
+    // printf("Size that needs to be accessed : %d\n", vertices.size()*sizeof(float4));
+    checkCudaErrors(cudaMemcpy(dptr, host_pos, vertices.size()*sizeof(float4), cudaMemcpyHostToDevice));
     struct object* d_objects;
-    cudaMalloc(&d_objects, sizeof(objects));
+    checkCudaErrors(cudaMalloc(&d_objects, sizeof(objects)));
     // printf("3\n");
-    cudaMemcpy(d_objects, objects, sizeof(objects), cudaMemcpyHostToDevice);
+    checkCudaErrors(cudaMemcpy(d_objects, objects, sizeof(objects), cudaMemcpyHostToDevice));
     // printf("Memory allocated in device successfully!\n");
     launch_kernel(dptr, d_objects, g_fAnim);
-    cudaFree(d_objects);
-
+    checkCudaErrors(cudaFree(d_objects));
+    // printf("vbo is %d\n", vbo_resource);
     // unmap buffer object
     checkCudaErrors(cudaGraphicsUnmapResources(1, vbo_resource, 0));
 }
@@ -549,85 +556,98 @@ void runAutoTest(int devID, char **argv, char *ref_file)
 
 
 float4 getRandomSpeed(){
-	return make_float4((rand()%100)/100.0,(rand()%100)/100.0,(rand()%100)/100.0,1.0f);
+	float normalizer = 1000.0;
+	return make_float4((rand()%100)/normalizer,(rand()%100)/normalizer,(rand()%100)/normalizer,1.0f);
 }
+
+void appendObject(std::vector<glm::vec3> &vertices, std::vector<unsigned int> &mappings,
+ std::vector<glm::vec3> &temp_vertices, std::vector<unsigned int> &temp_mappings){
+	int startIndex = vertices.size();
+	vertices.insert(vertices.end(), temp_vertices.begin(), temp_vertices.end());
+	for (int i = 0; i < temp_mappings.size(); ++i)
+	{
+		mappings.push_back(temp_mappings[i] + startIndex);
+	}
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 //! Create VBO
 ////////////////////////////////////////////////////////////////////////////////
-void createVBO(GLuint *vbo, struct cudaGraphicsResource **vbo_res,
+void createVBOAndIBO(GLuint *vbo, GLuint *ibo, struct cudaGraphicsResource **vbo_res,
                unsigned int vbo_res_flags)
 {
     assert(vbo);
-
     // create buffer object
     glGenBuffers(1, vbo);
     glBindBuffer(GL_ARRAY_BUFFER, *vbo);
-
     // initialize buffer object
-    // unsigned int size = mesh_width * mesh_height * 4 * sizeof(float);
-
     vertices.clear();
-    // bool res = loadOBJ("cone.obj", vertices, uvs, normals);
-    // assert(res);
-    // objects[0].n_vertices = vertices.size();
-    // objects[0].speed = getRandomSpeed();
-
-    // std::vector<glm::vec3> temp_vertices;
-    // res = loadOBJ("cube.obj", temp_vertices, uvs, normals);
-    // assert(res);
-    // objects[1].n_vertices = temp_vertices.size();
-    // objects[1].speed = getRandomSpeed();
-
-    // vertices.insert(vertices.end(), temp_vertices.begin(), temp_vertices.end());
-
+    mappings.clear();
     std::vector<glm::vec3> temp_vertices_cube;
     std::vector<glm::vec3> temp_vertices_cone;
-    // res = loadOBJ("cube.obj", temp_vertices_cube, uvs, normals);
-    // assert(res);
-    // res = loadOBJ("cone.obj", temp_vertices_cone, uvs, normals);
-    // assert(res);
-
+    std::vector<unsigned int> temp_mappings_cube;
+    std::vector<unsigned int> temp_mappings_cone;
     if(OBJECT_COUNT  > 0){
     	bool res;
-	    res = loadOBJ("cube.obj", temp_vertices_cube, uvs, normals);
+	    res = loadOBJ("cube.obj", temp_vertices_cube, temp_mappings_cube);
 	    assert(res);
-	    res = loadOBJ("cone.obj", temp_vertices_cone, uvs, normals);
+	    res = loadOBJ("cone.obj", temp_vertices_cone, temp_mappings_cone);
 	    assert(res);
 	}
     
-    for (int i = 0; i < OBJECT_COUNT; ++i)
+	for (int i = 0; i < OBJECT_COUNT; ++i)
     {
-        // printf("i = %d\n", i);
-        // int index = i;
+    	if(mappings.size()>MAX_MAPPINGS){
+	    	printf("Error! Mappings more than the threshold at object number %d. Exiting.\n", i);
+	    	exit(-1);
+	    }
         if(i%2 == 0){
 	        objects[i].n_vertices = temp_vertices_cube.size();
 	        objects[i].speed = getRandomSpeed();
-	        vertices.insert(vertices.end(), temp_vertices_cube.begin(), temp_vertices_cube.end());
+	        appendObject(vertices, mappings, temp_vertices_cube, temp_mappings_cube);
 		}
-		else{
+		else
+		{
 	        objects[i].n_vertices = temp_vertices_cone.size();
 	        objects[i].speed = getRandomSpeed();
-	        vertices.insert(vertices.end(), temp_vertices_cone.begin(), temp_vertices_cone.end());
+	        appendObject(vertices, mappings, temp_vertices_cone, temp_mappings_cone);
 	    }
+	    
     }
-
-    
+    printf("Loading successful.\n");
+    printf("vertices.size(): %ld, vertices[0]: %ld, &vertices[0]: %ld \n",vertices.size(), vertices[0], &vertices[0]);
     glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float4), &vertices[0], GL_DYNAMIC_DRAW);
-    // glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float4), &vertices[0], GL_DYNAMIC_DRAW);
+    // glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(glm::vec3), &vertices[0], GL_DYNAMIC_DRAW);
     printf("Size of vertices = %d\n", vertices.size());
+    printf("Size of mappings = %d\n", mappings.size());
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     // register this buffer object with CUDA
     checkCudaErrors(cudaGraphicsGLRegisterBuffer(vbo_res, *vbo, vbo_res_flags));
 
     SDK_CHECK_ERROR_GL();
+
+    assert(ibo);
+    // create buffer object
+    glGenBuffers(1, ibo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, *ibo);
+    // initialize buffer object
+    
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, mappings.size() * sizeof(unsigned int), &mappings[0], GL_STATIC_DRAW);
+
+    // glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+    SDK_CHECK_ERROR_GL();
+
 }
+
 
 ////////////////////////////////////////////////////////////////////////////////
 //! Delete VBO
 ////////////////////////////////////////////////////////////////////////////////
-void deleteVBO(GLuint *vbo, struct cudaGraphicsResource *vbo_res)
+void deleteVBOAndIBO(GLuint *vbo, GLuint *ibo, struct cudaGraphicsResource *vbo_res)
 {
 
     // unregister this buffer object with CUDA
@@ -636,7 +656,11 @@ void deleteVBO(GLuint *vbo, struct cudaGraphicsResource *vbo_res)
     glBindBuffer(1, *vbo);
     glDeleteBuffers(1, vbo);
 
+    // glBindBuffer(1, *ibo);
+    // glDeleteBuffers(1, ibo);
+
     *vbo = 0;
+    *ibo = 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -660,12 +684,21 @@ void display()
 
     // render from the vbo
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+
     glVertexPointer(4, GL_FLOAT, 0, 0);
 
+
+
     glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_INDEX_ARRAY);
     glColor3f(1.0, 0.0, 0.0);
-    glDrawArrays(GL_TRIANGLES, 0, vertices.size());
+    // glDrawSomething(GL_TRIANGLES, 0, vertices.size());
+    // printf("mappings size: %d\n",mappings.size());
+    glDrawElements(GL_TRIANGLES, mappings.size(), GL_UNSIGNED_INT, (const GLvoid *)0);
     glDisableClientState(GL_VERTEX_ARRAY);
+    glDisableClientState(GL_INDEX_ARRAY);
+
 
     glutSwapBuffers();
 
@@ -690,7 +723,7 @@ void cleanup()
 
     if (vbo)
     {
-        deleteVBO(&vbo, cuda_vbo_resource);
+        deleteVBOAndIBO(&vbo, &ibo, cuda_vbo_resource);
     }
 }
 
@@ -789,16 +822,10 @@ void checkResultCuda(int argc, char **argv, const GLuint &vbo)
 
 bool loadOBJ(
     const char * path, 
-    std::vector<glm::vec3> & out_vertices, 
-    std::vector<glm::vec2> & out_uvs,
-    std::vector<glm::vec3> & out_normals
+    std::vector<glm::vec3> & out_vertices, std::vector<unsigned int> &temp_mappings
 ){
     printf("Loading OBJ file %s...\n", path);
 
-    std::vector<unsigned int> vertexIndices, uvIndices, normalIndices;
-    std::vector<glm::vec3> temp_vertices; 
-    std::vector<glm::vec2> temp_uvs;
-    std::vector<glm::vec3> temp_normals;
 
 
     FILE * file = fopen(path, "r");
@@ -821,38 +848,18 @@ bool loadOBJ(
         if ( strcmp( lineHeader, "v" ) == 0 ){
             glm::vec3 vertex;
             fscanf(file, "%f %f %f\n", &vertex.x, &vertex.y, &vertex.z );
-            temp_vertices.push_back(vertex);
+            out_vertices.push_back(vertex);
         }
-        // else if ( strcmp( lineHeader, "vt" ) == 0 ){
-        //     glm::vec2 uv;
-        //     fscanf(file, "%f %f\n", &uv.x, &uv.y );
-        //     uv.y = -uv.y; // Invert V coordinate since we will only use DDS texture, which are inverted. Remove if you want to use TGA or BMP loaders.
-        //     temp_uvs.push_back(uv);
-        // }
-        // else if ( strcmp( lineHeader, "vn" ) == 0 ){
-        //     glm::vec3 normal;
-        //     fscanf(file, "%f %f %f\n", &normal.x, &normal.y, &normal.z );
-        //     temp_normals.push_back(normal);
-        // }
         else if ( strcmp( lineHeader, "f" ) == 0 ){
-            std::string vertex1, vertex2, vertex3;
-            unsigned int vertexIndex[3], uvIndex[3], normalIndex[3];
-            // int matches = fscanf(file, "%d/%d/%d %d/%d/%d %d/%d/%d\n", &vertexIndex[0], &uvIndex[0], &normalIndex[0], &vertexIndex[1], &uvIndex[1], &normalIndex[1], &vertexIndex[2], &uvIndex[2], &normalIndex[2] );
+            unsigned int vertexIndex[3];
             int matches = fscanf(file, "%d %d %d\n", &vertexIndex[0], &vertexIndex[1], &vertexIndex[2]);
-            // if (matches != 9){
             if (matches != 3){
                 printf("File can't be read by our simple parser :-( Try exporting with other options\n");
                 return false;
             }
-            vertexIndices.push_back(vertexIndex[0]);
-            vertexIndices.push_back(vertexIndex[1]);
-            vertexIndices.push_back(vertexIndex[2]);
-            // uvIndices    .push_back(uvIndex[0]);
-            // uvIndices    .push_back(uvIndex[1]);
-            // uvIndices    .push_back(uvIndex[2]);
-            // normalIndices.push_back(normalIndex[0]);
-            // normalIndices.push_back(normalIndex[1]);
-            // normalIndices.push_back(normalIndex[2]);
+            temp_mappings.push_back(vertexIndex[0]-1);
+            temp_mappings.push_back(vertexIndex[1]-1);
+            temp_mappings.push_back(vertexIndex[2]-1);
         }else{
             // Probably a comment, eat up the rest of the line
             char stupidBuffer[1000];
@@ -860,26 +867,15 @@ bool loadOBJ(
         }
 
     }
-
-    // For each vertex of each triangle
-    for( unsigned int i=0; i<vertexIndices.size(); i++ ){
-
-        // Get the indices of its attributes
-        unsigned int vertexIndex = vertexIndices[i];
-        // unsigned int uvIndex = uvIndices[i];
-        // unsigned int normalIndex = normalIndices[i];
-        
-        // Get the attributes thanks to the index
-        glm::vec3 vertex = temp_vertices[ vertexIndex-1 ];
-        // glm::vec2 uv = temp_uvs[ uvIndex-1 ];
-        // glm::vec3 normal = temp_normals[ normalIndex-1 ];
-        
-        // Put the attributes in buffers
-        out_vertices.push_back(vertex);
-        // out_uvs     .push_back(uv);
-        // out_normals .push_back(normal);
-    
-    }
+    // // For each vertex of each triangle
+    // for( unsigned int i=0; i<temp_mappings.size(); i++ ){
+    //     // Get the indices of its attributes
+    //     unsigned int vertexIndex = temp_mappings[i];
+    //     // Get the attributes thanks to the index
+    //     glm::vec3 vertex = temp_vertices[ vertexIndex-1 ];
+    //     // Put the attributes in buffers
+    //     out_vertices.push_back(vertex);
+    // }
 
     return true;
 }
