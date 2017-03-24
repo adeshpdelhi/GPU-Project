@@ -183,25 +183,13 @@ __device__ int getObjectId(int index, struct object* d_objects){
 ///////////////////////////////////////////////////////////////////////////////
 __global__ void simple_vbo_kernel(float4 *pos, struct object* d_objects, float time)
 {
-    // unsigned int x = blockIdx.x*blockDim.x + threadIdx.x;
-    // unsigned int y = blockIdx.y*blockDim.y + threadIdx.y;
-
     int idx = blockIdx.x*blockDim.x + threadIdx.x;
-    // printf("here\n");
-
     int object_id = getObjectId(idx, d_objects);
     if(object_id == -1)
         return;
-    // printf("now here\n");
-    
     float4 speed = d_objects[object_id].speed;
-    // printf("%d: %f %f %f\n", object_id,speed.x, speed.y, speed.z);
-    // printf("%d: %f %f %f\n", idx, pos[idx].x, pos[idx].y, pos[idx].z);
     pos[idx] = make_float4(pos[idx].x + speed.x*time, pos[idx].z + speed.z*time, 
         pos[idx].y+speed.y*time, 1.0f);
-    // printf("%d: %f %f %f\n", idx, pos[idx].x, pos[idx].y, pos[idx].z);
-
-    // pos[y*width+x] = make_float4(u, w, v, 1.0f);
 }
 
 
@@ -212,9 +200,6 @@ void launch_kernel(float4 *pos, struct object* objects, float time)
     int threadsInBlock = ceil((float)vertices.size()/BLOCK_DIM);
     dim3 grid(threadsInBlock,1);
     dim3 block(BLOCK_DIM,1);
-    // printf("Size of vertices in kernel: %d, BLOCK_DIM: %d, %f\n", vertices.size(),BLOCK_DIM,(float)vertices.size()/BLOCK_DIM);
-    // printf("kernel dimenstion: Grid.x = %d\n",threadsInBlock);
-
     simple_vbo_kernel<<< grid, block>>>(pos, objects, time);
 }
 
@@ -402,7 +387,6 @@ bool runTest(int argc, char **argv, char *ref_file)
 
         printf("ref_file not found\n");
         // create VBO
-        // checkCudaErrors(cudaMalloc((void **)&d_vbo_buffer, mesh_width*mesh_height*4*sizeof(float)));
         checkCudaErrors(cudaMalloc((void **)&d_vbo_buffer, vertices.size()*sizeof(glm::vec3)));
 
         // run the cuda part
@@ -474,34 +458,16 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
                                                          *vbo_resource));
     // printf("CUDA mapped VBO: May access %ld bytes\n", num_bytes);
 
-    // execute the kernel
-    //    dim3 block(8, 8, 1);
-    //    dim3 grid(mesh_width / block.x, mesh_height / block.y, 1);
-    //    kernel<<< grid, block>>>(dptr, mesh_width, mesh_height, g_fAnim);
-    
-    // printf("vertices size: %d\n",vertices.size());
-    // printf("0\n");
-    
-    // printf("1\n");
     for (int i = 0; i<vertices.size(); ++i)
     {
-        // printf("i = %d\n",i);
-        // printf("vertices[i].x = %f\n",vertices[i].x);
-        // printf("pos[i].x = %f\n", host_pos[i].x);
         host_pos[i] = make_float4(vertices[i].x,vertices[i].y, vertices[i].z,1.0f);
     }
-    // printf("%d %d %d\n",dptr, host_pos, vertices.size()*sizeof(float4));
-    // checkCudaErrors(cudaDeviceSynchronize());
-    // printf("Size that needs to be accessed : %d\n", vertices.size()*sizeof(float4));
     checkCudaErrors(cudaMemcpy(dptr, host_pos, vertices.size()*sizeof(float4), cudaMemcpyHostToDevice));
     struct object* d_objects;
     checkCudaErrors(cudaMalloc(&d_objects, sizeof(objects)));
-    // printf("3\n");
     checkCudaErrors(cudaMemcpy(d_objects, objects, sizeof(objects), cudaMemcpyHostToDevice));
-    // printf("Memory allocated in device successfully!\n");
     launch_kernel(dptr, d_objects, g_fAnim);
     checkCudaErrors(cudaFree(d_objects));
-    // printf("vbo is %d\n", vbo_resource);
     // unmap buffer object
     checkCudaErrors(cudaGraphicsUnmapResources(1, vbo_resource, 0));
 }
@@ -615,14 +581,13 @@ void createVBOAndIBO(GLuint *vbo, GLuint *ibo, struct cudaGraphicsResource **vbo
 	    }
 	    
     }
-    printf("Loading successful.\n");
-    printf("vertices.size(): %ld, vertices[0]: %ld, &vertices[0]: %ld \n",vertices.size(), vertices[0], &vertices[0]);
-    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float4), &vertices[0], GL_DYNAMIC_DRAW);
-    // glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(glm::vec3), &vertices[0], GL_DYNAMIC_DRAW);
     printf("Size of vertices = %d\n", vertices.size());
     printf("Size of mappings = %d\n", mappings.size());
+    //Code crashes at the following line for object count > 1500
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float4), &vertices[0], GL_DYNAMIC_DRAW);
+    // glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(glm::vec3), &vertices[0], GL_DYNAMIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
-
+    printf("Object allocated in OpenGL\n");
     // register this buffer object with CUDA
     checkCudaErrors(cudaGraphicsGLRegisterBuffer(vbo_res, *vbo, vbo_res_flags));
 
@@ -867,15 +832,6 @@ bool loadOBJ(
         }
 
     }
-    // // For each vertex of each triangle
-    // for( unsigned int i=0; i<temp_mappings.size(); i++ ){
-    //     // Get the indices of its attributes
-    //     unsigned int vertexIndex = temp_mappings[i];
-    //     // Get the attributes thanks to the index
-    //     glm::vec3 vertex = temp_vertices[ vertexIndex-1 ];
-    //     // Put the attributes in buffers
-    //     out_vertices.push_back(vertex);
-    // }
 
     return true;
 }
