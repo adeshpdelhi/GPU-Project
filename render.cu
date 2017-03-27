@@ -1,176 +1,5 @@
-////////////////////////////////////////////////////////////////////////////
-//
-// Copyright 1993-2015 NVIDIA Corporation.  All rights reserved.
-//
-// Please refer to the NVIDIA end user license agreement (EULA) associated
-// with this source code for terms and conditions that govern your use of
-// this software. Any use, reproduction, disclosure, or distribution of
-// this software and related documentation outside the terms of the EULA
-// is strictly prohibited.
-//
-////////////////////////////////////////////////////////////////////////////
-
-/*
-    This example demonstrates how to use the Cuda OpenGL bindings to
-    dynamically modify a vertex buffer using a Cuda kernel.
-
-    The steps are:
-    1. Create an empty vertex buffer object (VBO)
-    2. Register the VBO with Cuda
-    3. Map the VBO for writing from Cuda
-    4. Run Cuda kernel to modify the vertex positions
-    5. Unmap the VBO
-    6. Render the results using OpenGL
-
-    Host code
-*/
-
-#define OBJECT_COUNT 1500 //Do NOT go beyond 1500
-#define MAX_MAPPINGS 100000000
-#define BLOCK_DIM 1024
-// includes, system
-// #include <GL/glew.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <math.h>
-#include <ctime>
-#include <climits>
-
-
-#ifdef _WIN32
-#  define WINDOWS_LEAN_AND_MEAN
-#  define NOMINMAX
-#  include <windows.h>
-#endif
-
-// OpenGL Graphics includes
-#include <helper_gl.h>
-#if defined (__APPLE__) || defined(MACOSX)
-  #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-  #include <GLUT/glut.h>
-  #ifndef glutCloseFunc
-  #define glutCloseFunc glutWMCloseFunc
-  #endif
-#else
-#include <GL/freeglut.h>
-#endif
-
-// includes, cuda
-#include <cuda_runtime.h>
-#include <cuda_gl_interop.h>
-
-// Utilities and timing functions
-#include <helper_functions.h>    // includes cuda.h and cuda_runtime_api.h
-#include <timer.h>               // timing functions
-
-// CUDA helper functions
-#include <helper_cuda.h>         // helper functions for CUDA error check
-#include <helper_cuda_gl.h>      // helper functions for CUDA/GL interop
-
-#include <vector_types.h>
-
-#include <thrust/device_vector.h>
-#include <bits/stdc++.h>
-
-
-#define GLM_FORCE_CUDA
-#include "glm/glm.hpp"
-
-
-#define MAX_EPSILON_ERROR 10.0f
-#define THRESHOLD          0.30f
-#define REFRESH_DELAY     10 //ms
-
-////////////////////////////////////////////////////////////////////////////////
-// constants
-const unsigned int window_width  = 512;
-const unsigned int window_height = 512;
-
-const unsigned int mesh_width    = 256;
-const unsigned int mesh_height   = 256;
-
-// vbo variables
-GLuint vbo;
-GLuint ibo;
-struct cudaGraphicsResource *cuda_vbo_resource;
-void *d_vbo_buffer = NULL;
-
-float g_fAnim = 0.0;
-
-// mouse controls
-int mouse_old_x, mouse_old_y;
-int mouse_buttons = 0;
-float rotate_x = 0.0, rotate_y = 0.0;
-float translate_z = -3.0;
-
-StopWatchInterface *timer = NULL;
-
-// Auto-Verification Code
-int fpsCount = 0;        // FPS count for averaging
-int fpsLimit = 1;        // FPS limit for sampling
-int g_Index = 0;
-float avgFPS = 0.0f;
-unsigned int frameCount = 0;
-unsigned int g_TotalErrors = 0;
-bool g_bQAReadback = false;
-
-int *pArgc = NULL;
-char **pArgv = NULL;
-
-#define MAX(a,b) ((a > b) ? a : b)
-
-////////////////////////////////////////////////////////////////////////////////
-// declaration, forward
-bool runTest(int argc, char **argv, char *ref_file);
-void cleanup();
-
-// GL functionality
-bool initGL(int *argc, char **argv);
-void createVBOAndIBO(GLuint *vbo, GLuint *ibo, struct cudaGraphicsResource **vbo_res,
-               unsigned int vbo_res_flags);
-void deleteVBOAndIBO(GLuint *vbo, struct cudaGraphicsResource *vbo_res);
-
-// rendering callbacks
-void display();
-void keyboard(unsigned char key, int x, int y);
-void mouse(int button, int state, int x, int y);
-void motion(int x, int y);
-void timerEvent(int value);
-
-// Cuda functionality
-void runCuda(struct cudaGraphicsResource **vbo_resource);
-void runAutoTest(int devID, char **argv, char *ref_file);
-void checkResultCuda(int argc, char **argv, const GLuint &vbo);
-
-float getMaximumBoundingBox(std::vector <std::vector <glm::vec3> > );
-
-
-const char *sSDKsample = "simpleGL (VBO)";
-
-class object{
-public:
-    int n_vertices;
-    float4 speed;
-    float4 centroid;
-    float4 initial_location;
-    float rotation_matrix[4][4];
-}objects[OBJECT_COUNT];
-
-
-
-float4 *host_pos; //globally declared to allot more vertices than feasible in local scope
-float boundingBoxLength;
-
-std::vector<glm::vec3> vertices;
-std::vector<unsigned int> mappings;
-
-
-bool loadOBJ(
-    const char * path, 
-    std::vector<glm::vec3> & out_vertices, 
-    std::vector <unsigned int> & mappings
-);
+#include "render.h"
+#include "object.h"
 
 __device__ int getObjectId(int index, struct object* d_objects){
     int sum = 0;
@@ -284,44 +113,6 @@ int findGraphicsGPU(char *name)
     }
 
     return nGraphicsGPU;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// Program main
-////////////////////////////////////////////////////////////////////////////////
-int main(int argc, char **argv)
-{
-	host_pos = (float4 *)malloc(MAX_MAPPINGS*sizeof(float4));
-	if(host_pos == NULL){
-		printf("Error: Unable to allocate mapping memory on host.\n");
-		exit(-1);
-	}
-	srand((int)time(0));
-    char *ref_file = NULL;
-
-    pArgc = &argc;
-    pArgv = argv;
-
-#if defined(__linux__)
-    setenv ("DISPLAY", ":0", 0);
-#endif
-
-    printf("%s starting...\n", sSDKsample);
-
-    if (argc > 1)
-    {
-        if (checkCmdLineFlag(argc, (const char **)argv, "file"))
-        {
-            // In this mode, we are running non-OpenGL and doing a compare of the VBO was generated correctly
-            getCmdLineArgumentString(argc, (const char **)argv, "file", (char **)&ref_file);
-        }
-    }
-
-
-    runTest(argc, argv, ref_file);
-
-    printf("%s completed, returned %s\n", sSDKsample, (g_TotalErrors == 0) ? "OK" : "ERROR!");
-    exit(g_TotalErrors == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
 }
 
 void computeFPS()
@@ -534,18 +325,18 @@ void runAutoTest(int devID, char **argv, char *ref_file)
 
 
 float4 getRandomSpeed(){
-	float normalizer = 1000.0;
-	return make_float4((rand()%100)/normalizer,(rand()%100)/normalizer,(rand()%100)/normalizer,1.0f);
+    float normalizer = 1000.0;
+    return make_float4((rand()%100)/normalizer,(rand()%100)/normalizer,(rand()%100)/normalizer,1.0f);
 }
 
 void appendObject(std::vector<glm::vec3> &vertices, std::vector<unsigned int> &mappings,
  std::vector<glm::vec3> &temp_vertices, std::vector<unsigned int> &temp_mappings){
-	int startIndex = vertices.size();
-	vertices.insert(vertices.end(), temp_vertices.begin(), temp_vertices.end());
-	for (int i = 0; i < temp_mappings.size(); ++i)
-	{
-		mappings.push_back(temp_mappings[i] + startIndex);
-	}
+    int startIndex = vertices.size();
+    vertices.insert(vertices.end(), temp_vertices.begin(), temp_vertices.end());
+    for (int i = 0; i < temp_mappings.size(); ++i)
+    {
+        mappings.push_back(temp_mappings[i] + startIndex);
+    }
 }
 
 
@@ -567,36 +358,36 @@ void createVBOAndIBO(GLuint *vbo, GLuint *ibo, struct cudaGraphicsResource **vbo
     std::vector<unsigned int> temp_mappings_cube;
     std::vector<unsigned int> temp_mappings_cone;
     if(OBJECT_COUNT  > 0){
-    	bool res;
-	    res = loadOBJ("cube.obj", temp_vertices_cube, temp_mappings_cube);
-	    assert(res);
-	    res = loadOBJ("cone.obj", temp_vertices_cone, temp_mappings_cone);
-	    assert(res);
-	    std::vector <std::vector <glm::vec3> > concatenated_vectices;
-	   	concatenated_vectices.push_back(temp_vertices_cube);
-	   	concatenated_vectices.push_back(temp_vertices_cone);
-	    boundingBoxLength = getMaximumBoundingBox(concatenated_vectices);
-	    printf("Maximum bounding length: %f\n", boundingBoxLength);
-	}
+        bool res;
+        res = loadOBJ("cube.obj", temp_vertices_cube, temp_mappings_cube);
+        assert(res);
+        res = loadOBJ("cone.obj", temp_vertices_cone, temp_mappings_cone);
+        assert(res);
+        std::vector <std::vector <glm::vec3> > concatenated_vectices;
+        concatenated_vectices.push_back(temp_vertices_cube);
+        concatenated_vectices.push_back(temp_vertices_cone);
+        boundingBoxLength = getMaximumBoundingBox(concatenated_vectices);
+        printf("Maximum bounding length: %f\n", boundingBoxLength);
+    }
     
-	for (int i = 0; i < OBJECT_COUNT; ++i)
+    for (int i = 0; i < OBJECT_COUNT; ++i)
     {
-    	if(mappings.size()>MAX_MAPPINGS){
-	    	printf("Error! Mappings more than the threshold at object number %d. Exiting.\n", i);
-	    	exit(-1);
-	    }
+        if(mappings.size()>MAX_MAPPINGS){
+            printf("Error! Mappings more than the threshold at object number %d. Exiting.\n", i);
+            exit(-1);
+        }
         if(i%2 == 0){
-	        objects[i].n_vertices = temp_vertices_cube.size();
-	        objects[i].speed = getRandomSpeed();
-	        appendObject(vertices, mappings, temp_vertices_cube, temp_mappings_cube);
-		}
-		else
-		{
-	        objects[i].n_vertices = temp_vertices_cone.size();
-	        objects[i].speed = getRandomSpeed();
-	        appendObject(vertices, mappings, temp_vertices_cone, temp_mappings_cone);
-	    }
-	    
+            objects[i].n_vertices = temp_vertices_cube.size();
+            objects[i].speed = getRandomSpeed();
+            appendObject(vertices, mappings, temp_vertices_cube, temp_mappings_cube);
+        }
+        else
+        {
+            objects[i].n_vertices = temp_vertices_cone.size();
+            objects[i].speed = getRandomSpeed();
+            appendObject(vertices, mappings, temp_vertices_cone, temp_mappings_cone);
+        }
+        
     }
     printf("Size of vertices = %d\n", vertices.size());
     printf("Size of mappings = %d\n", mappings.size());
@@ -626,23 +417,23 @@ void createVBOAndIBO(GLuint *vbo, GLuint *ibo, struct cudaGraphicsResource **vbo
 }
 
 float getMaximumBoundingBox(std::vector <std::vector <glm::vec3> >  concatenated_vectices){
-	float maxX = INT_MIN, minX = INT_MAX, maxY = INT_MIN, minY = INT_MAX, maxZ = INT_MIN, minZ = INT_MAX;
-	float maxBox = INT_MIN;
-	for (int i = 0; i < concatenated_vectices.size(); ++i)
-	{
-		maxX = INT_MIN, minX = INT_MAX, maxY = INT_MIN, minY = INT_MAX, maxZ = INT_MIN, minZ = INT_MAX;
-		for (int j = 0; j < concatenated_vectices[i].size(); ++j)
-		{
-			maxX = max(maxX, concatenated_vectices[i][j].x);
-			minX = min(minX, concatenated_vectices[i][j].x);
-			maxZ = max(maxZ, concatenated_vectices[i][j].z);
-			minZ = min(minZ, concatenated_vectices[i][j].z);
-			maxY = max(maxY, concatenated_vectices[i][j].y);
-			minY = min(minY, concatenated_vectices[i][j].y);
-		}
-		maxBox = max(maxBox, max(maxX - minX, max(maxY - minY, maxZ - minZ)));
-	}
-	return maxBox;
+    float maxX = INT_MIN, minX = INT_MAX, maxY = INT_MIN, minY = INT_MAX, maxZ = INT_MIN, minZ = INT_MAX;
+    float maxBox = INT_MIN;
+    for (int i = 0; i < concatenated_vectices.size(); ++i)
+    {
+        maxX = INT_MIN, minX = INT_MAX, maxY = INT_MIN, minY = INT_MAX, maxZ = INT_MIN, minZ = INT_MAX;
+        for (int j = 0; j < concatenated_vectices[i].size(); ++j)
+        {
+            maxX = max(maxX, concatenated_vectices[i][j].x);
+            minX = min(minX, concatenated_vectices[i][j].x);
+            maxZ = max(maxZ, concatenated_vectices[i][j].z);
+            minZ = min(minZ, concatenated_vectices[i][j].z);
+            maxY = max(maxY, concatenated_vectices[i][j].y);
+            minY = min(minY, concatenated_vectices[i][j].y);
+        }
+        maxBox = max(maxBox, max(maxX - minX, max(maxY - minY, maxZ - minZ)));
+    }
+    return maxBox;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
